@@ -6,7 +6,7 @@ V=$(sed -n 's/^let VERSION = \([0-9]*\)/\1/p' app/App.swift)
 APP="build/Startup (Mantra).app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/Startup (Mantra)" app/*.swift -framework AppKit -framework SwiftUI -framework ServiceManagement
+swiftc -O -swift-version 5 -parse-as-library -o "$APP/Contents/MacOS/Startup (Mantra)" app/*.swift -framework AppKit -framework SwiftUI -framework ServiceManagement
 cp Info.plist "$APP/Contents/Info.plist"
 sed -i '' "s/<string>1<\/string>/<string>$V<\/string>/g" "$APP/Contents/Info.plist" 2>/dev/null || sed -i "s/<string>1<\/string>/<string>$V<\/string>/g" "$APP/Contents/Info.plist"
 codesign --force -s "${SIGN:-Mantra Apps}" "$APP"

@@ -4,7 +4,7 @@ import ServiceManagement
 
 let VERSION = 1
 
-/* App Targets and Bundle Identifiers */
+// App Targets and Bundle Identifiers
 
 enum TargetApp: String, CaseIterable, Identifiable, Sendable {
     case voiceToText = "Voice to Text (Mantra)"
@@ -38,7 +38,7 @@ enum TargetApp: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/* Decision Logic */
+// Decision Logic
 
 enum AppAction: Equatable {
     case terminateAndLaunch(toTerminate: TargetApp, toLaunch: TargetApp)
@@ -68,7 +68,7 @@ func decideAction(
     }
 }
 
-/* App State */
+// App State
 
 @MainActor
 final class AppState: ObservableObject {
@@ -99,30 +99,27 @@ final class AppState: ObservableObject {
             loginStatusDescription = "Enabled"
         case .notRegistered:
             startAtLogin = false
-            loginStatusDescription = "Not registered"
+            loginStatusDescription = "Disabled"
         case .requiresApproval:
             startAtLogin = false
             loginStatusDescription = "Requires approval in System Settings"
         case .notFound:
             startAtLogin = false
-            loginStatusDescription = "Not found"
+            loginStatusDescription = "App not registered"
         @unknown default:
             startAtLogin = false
             loginStatusDescription = "Unknown status"
         }
     }
 
-    func setStartAtLogin(_ enabled: Bool) {
+    func setStartAtLogin(_ enable: Bool) {
         do {
-            if enabled {
+            if enable {
                 try SMAppService.mainApp.register()
-                startAtLogin = true
-                loginStatusDescription = "Enabled"
             } else {
                 try SMAppService.mainApp.unregister()
-                startAtLogin = false
-                loginStatusDescription = "Disabled"
             }
+            syncLoginItem()
         } catch {
             loginStatusDescription = "Error: \(error.localizedDescription)"
         }
@@ -172,88 +169,77 @@ final class AppState: ObservableObject {
         formatter.dateFormat = "HH:mm:ss"
         let timeString = formatter.string(from: Date())
 
-        switch action {
-        case .notInstalled(let missing):
-            notInstalledWarning = "\(missing.rawValue) is not installed on this Mac."
-            statusMessage = "[\(timeString)] \(missing.rawValue) not found"
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            switch action {
+            case .notInstalled(let missing):
+                self.notInstalledWarning = "\(missing.rawValue) is not installed on this Mac."
+                self.statusMessage = "[\(timeString)] \(missing.rawValue) not found"
 
-        case .alreadyRunning(let app):
-            notInstalledWarning = nil
-            statusMessage = "[\(timeString)] \(app.rawValue) is already running"
+            case .alreadyRunning(let app):
+                self.notInstalledWarning = nil
+                self.statusMessage = "[\(timeString)] \(app.rawValue) is already running"
 
-        case .terminateOnly(let toKill):
-            notInstalledWarning = nil
-            let killTarget = toKill
-            terminateApp(killTarget) { [weak self] in
-                Task { @MainActor in
-                    self?.statusMessage = "[\(timeString)] Killed \(killTarget.rawValue)"
-                }
-            }
+            case .terminateOnly(let toKill):
+                self.notInstalledWarning = nil
+                await self.terminateApp(toKill)
+                self.statusMessage = "[\(timeString)] Killed \(toKill.rawValue)"
 
-        case .launchOnly(let toStart):
-            notInstalledWarning = nil
-            let startTarget = toStart
-            if let url = targetURL {
-                launchApp(at: url) { [weak self] success in
-                    Task { @MainActor in
-                        if success {
-                            self?.statusMessage = "[\(timeString)] Started \(startTarget.rawValue)"
-                        } else {
-                            self?.statusMessage = "[\(timeString)] Failed to start \(startTarget.rawValue)"
-                        }
+            case .launchOnly(let toStart):
+                self.notInstalledWarning = nil
+                if let url = targetURL {
+                    let success = await self.launchApp(at: url)
+                    if success {
+                        self.statusMessage = "[\(timeString)] Started \(toStart.rawValue)"
+                    } else {
+                        self.statusMessage = "[\(timeString)] Failed to start \(toStart.rawValue)"
                     }
                 }
-            }
 
-        case .terminateAndLaunch(let toKill, let toStart):
-            notInstalledWarning = nil
-            let killTarget = toKill
-            let startTarget = toStart
-            let urlToLaunch = targetURL
-            terminateApp(killTarget) { [weak self] in
-                guard let url = urlToLaunch else { return }
-                self?.launchApp(at: url) { success in
-                    Task { @MainActor in
-                        if success {
-                            self?.statusMessage = "[\(timeString)] Killed \(killTarget.rawValue), started \(startTarget.rawValue)"
-                        } else {
-                            self?.statusMessage = "[\(timeString)] Killed \(killTarget.rawValue), failed to start \(startTarget.rawValue)"
-                        }
+            case .terminateAndLaunch(let toKill, let toStart):
+                self.notInstalledWarning = nil
+                await self.terminateApp(toKill)
+                if let url = targetURL {
+                    let success = await self.launchApp(at: url)
+                    if success {
+                        self.statusMessage = "[\(timeString)] Killed \(toKill.rawValue), started \(toStart.rawValue)"
+                    } else {
+                        self.statusMessage = "[\(timeString)] Killed \(toKill.rawValue), failed to start \(toStart.rawValue)"
                     }
                 }
             }
         }
     }
 
-    private nonisolated func terminateApp(_ app: TargetApp, completion: @Sendable @escaping () -> Void) {
+    private func terminateApp(_ app: TargetApp) async {
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: app.primaryBundleId)
         if running.isEmpty {
-            completion()
             return
         }
         for item in running {
             item.terminate()
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
-            for item in running {
-                if !item.isTerminated {
-                    item.forceTerminate()
-                }
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        for item in running {
+            if !item.isTerminated {
+                item.forceTerminate()
             }
-            completion()
         }
     }
 
-    private nonisolated func launchApp(at url: URL, completion: @Sendable @escaping (Bool) -> Void) {
+    private func launchApp(at url: URL) async -> Bool {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
-            completion(error == nil)
+        do {
+            _ = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
+            return true
+        } catch {
+            return false
         }
     }
 }
 
-/* SwiftUI View */
+// SwiftUI View
 
 struct ContentView: View {
     @ObservedObject var state: AppState
@@ -320,12 +306,13 @@ struct ContentView: View {
     }
 }
 
-/* App Delegate & Entry Point */
+// App Delegate & Entry Point
 
 @main
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
-    private let appState = AppState()
+    private lazy var appState = AppState()
 
     static func main() {
         let app = NSApplication.shared
